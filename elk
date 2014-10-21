@@ -1,0 +1,195 @@
+Ces applications sont dévéloppé en java. Elles sont donc techniquement installable sur tous types de serveurs.
+Nous utiliserons :
+
+Debian 7
+Logstash
+
+Logstash est téléchargeable en jar sur le site http://logstash.net
+Nous utiliserons : Debian 7
+
+wget -O - http://packages.elasticsearch.org/GPG-KEY-elasticsearch | apt-key add -
+echo 'deb http://packages.elasticsearch.org/logstash/1.4/debian stable main' > /etc/apt/sources.list.d/logstash.list
+apt-get update
+apt-get install logstash
+
+Elasticsearch
+Kibana
+
+L’interface d’affichage des logs :
+
+# installer le serveur web
+apt-get install apache2
+# telecharger le ta de kibana http://www.elasticsearch.org/overview/elkdownloads/
+# la derniere version 
+wget https://download.elasticsearch.org/kibana/kibana/kibana-3.1.0.tar.gz
+tar -xvf kibana* -C /var/www
+mv /var/www/kibana* /var/www/kibana
+
+Lumberjack
+
+La logique de logstash est assez simple.
+Installer tout d’abord la dépendance golang
+
+On peut aussi utilisé un “shipper” qui se charge de récuperer aisément les logs de plusieurs serveurs pour les rediriger vers logstash.
+installez lumberjack sur les serveurs distants.
+
+apt-get install rubygems
+gem install fpm
+export PATH=$PATH:/var/lib/gems/1.8/bin
+git clone https://github.com/jordansissel/lumberjack.git
+cd lumberjack
+make
+make deb
+dpkg -i lumberjack_0.0.8_amd64.deb  
+
+Configuration
+Elasticsearch
+
+On commence par elasticsearch :
+
+/etc/elasticsearch/elasticsearch.yaml
+
+ cluster.name: elasticsearch-logstash
+ bootstrap.mlockall: true    
+
+/etc/default/elasticsearch
+
+# Mémoire maximale à allouer a elasticsearch
+ES_HEAP_SIZE=2565m 
+
+Demarrer le service
+
+service elasticsearch start
+
+Installez le plugin web
+
+/usr/share/elasticsearch/bin/plugin -install mobz/elasticsearch-head
+
+
+http://IP:9200/_plugin/head
+Kibana
+
+apt-get install apache2
+cd /var/www
+wget http://download.elasticsearch.org/kibana/kibana/kibana-latest.zip
+unzip kibana-latest.zip
+mv kibana-latest kibana
+chown -R www-data:www-data kibana    
+
+http://IP/kibana
+Lumberjack
+
+Lumberjack transporte les logs avec ssl
+
+Les clés ssl doivent sur les différents clients et logstash
+
+cd /etc/ssl
+openssl req -x509 -batch -nodes -newkey rsa:2048 -keyout logstash.key -out logstash.crt   
+
+/etc/lumberjack/lumberjack.conf
+
+{
+    "network": {
+        "servers": [ "IP_LOG:5043" ],
+            "ssl certificate": "/etc/ssl/logstash.crt",
+            "ssl key": "/etc/ssl/logstash.key",
+            "ssl ca": "/etc/ssl/logstash.crt"
+    },
+        "files": [
+        {
+            "paths": [ "/var/log/apache2/*access*.log" ],
+            "fields": { "type": "apache" }
+        }
+    ]
+}
+
+Demarrer lumberjack
+
+/usr/bin/lumberjack -config /etc/lumberjack.conf -spool-size 50 
+
+Logstash
+
+Logstash, la doc se trouve sur : http://logstash.net/docs/1.3.3/
+
+Logstash est modulable, il se configure en 3 blocs
+Input
+
+Le bloc input contient toute les sources de logs de logstash.
+
+    tcp,
+    syslog
+    udp
+    twitter
+    irc
+    xmpp
+
+On peut specifier le ‘type’ pour filtrer le log apres.
+
+/etc/logstash/logstash.conf
+
+input {
+# de simple fichier
+    file {
+        path => '/var/log/syslog'
+            type => 'syslog'
+    } 
+# serveur syslog
+    syslog {
+        host => '0.0.0.0'
+            type => 'syslog'
+    }
+# ouvre le port pour lumberjack
+    lumberjack {
+# specifie le port
+        port => 5043
+# specifie les certificats ssl
+            ssl_certificate => "/etc/ssl/logstash.pub"
+            ssl_key => "/etc/ssl/logstash.key"
+            type => "apache"
+    }
+
+}
+
+Filter
+
+le block filter contient tout les filtres pour parser les logs en mots clés.
+grok est le filtre le plus utilisé, c’est des filtres regex sans leur complexité.
+C’est regex sont nommés ex :
+Tous les logs de /var/log/syslog : SYSLOGLINE
+Les logs acces d’apache : COMBINEDAPACHELOG
+
+Une application en ligne permet de tester les filtres en ligne
+http://grokdebug.herokuapp.com
+
+/etc/logstash/logstash.conf
+
+filter {
+    if [type] == 'syslog' {
+        grok {
+            match => ["message", "%{SYSLOGLINE}"]
+        }
+        if [type] == 'apache' {
+            grok {
+                match => ["message", "%{COMBINEDAPACHELOG}"]
+            }
+        }
+        
+
+Output
+
+Le block output indique la direction du logs après le filtrage.
+
+Les logs peuvent être redirigé vers elasticsearch, mongodb, stocké dans des fichiers, email, csv etc…
+
+/etc/logstash/logstash.conf
+
+output {
+    elasticsearch {
+        cluster => "elasticsearch-logstash"
+     }
+}
+        
+
+Demarrer logstash
+
+service logstash start   
